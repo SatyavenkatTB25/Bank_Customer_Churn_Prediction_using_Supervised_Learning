@@ -1,0 +1,376 @@
+---
+title: "Bank Customer Churn Prediction"
+output: html_document
+date: "2024-04-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Importing Libraries & Dataset
+
+```{r}
+library(ISLR2)
+library(tidyverse)
+library(MASS)
+library(class)
+library(naivebayes)
+library(glmnet)
+library(gam)
+library(boot)
+library(ggplot2)
+set.seed(1234)
+```
+
+```{r}
+dat <- read_csv("/Users/tbs/Downloads/Bank_Customer_Churn_Prediction.csv")
+```
+## 1) Data Preparation :-
+
+```{r}
+dat_copy <- dat
+```
+
+
+```{r}
+dat |> is.na() |> colSums()
+```
+```{r}
+dat |> glimpse()
+```
+# Removing unnecessary Column
+
+```{r}
+dat <- dat |> 
+  dplyr::select(-customer_id)
+```
+
+## 2) Explanatory Data Analysis (EDA) :-
+
+# (i) Customer Churn Distribution
+
+```{r}
+# Get the churn count
+churn_count <- table(dat$churn)
+
+# Create a dataframe for plotting
+churn_df <- data.frame(
+  churn = factor(names(churn_count), levels = c("0", "1")),
+  Frequency = as.numeric(churn_count)
+)
+
+# Calculate percentages
+total_count <- sum(churn_df$Frequency)
+churn_df$Percentage <- round(churn_df$Frequency / total_count * 100, 1)
+
+# Plot
+ggplot(churn_df, aes(x = churn, y = Frequency, fill = churn)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("0" = "lightblue", "1" = "lightgreen"), name = "Churn", labels = c("No churn", "Churn")) +
+  geom_text(aes(label = paste0(Percentage, "%")), vjust = -0.5, size = 4) +
+  labs(x = "Churn", y = "Frequency", title = "Customer Churn Distribution") +
+  theme_minimal()
+
+```
+
+There's a class imbalance with about 79% of the customers not churning, while around 20% did churn.
+
+# (ii) Credit Score Distribution by Churn
+
+```{r}
+# Convert 'churn' to factor if it's not already
+dat_copy$churn <- factor(dat_copy$churn)
+
+# Plot
+ggplot(dat_copy, aes(x = churn, y = credit_score, fill = churn)) +
+  geom_boxplot(fill = c("orange", "blue")) +  # Specify colors directly in geom_boxplot()
+  labs(x = "Churn", y = "Credit Score", title = "Credit Score Distribution by Churn") +
+  theme_minimal()
+
+```
+
+The box plot suggests a possible correlation between lower credit scores and customer churn. The box (representing the middle 50% of data) for churned customers is positioned lower than the non-churned customers' box.
+
+# (iii) Balance vs Estimated Salary 
+
+```{r}
+# Convert 'churn' to factor if it's not already
+dat_copy$churn <- factor(dat_copy$churn)
+
+# Plot
+ggplot(dat_copy, aes(x = balance, y = estimated_salary, color = churn)) +
+  geom_point(aes(color = churn), show.legend = TRUE) +
+  labs(x = "Balance", y = "Estimated Salary", title = "Balance vs. Estimated Salary") +
+  scale_color_manual(values = c("red", "orange"), name = "Churn", labels = c("No churn", "Churn")) +
+  theme_minimal()
+
+```
+The scatterplot shows an upward trend. As estimated salary increases, the balance also tends to increase. This suggests that people with higher estimated salaries tend to have larger balances in their accounts.
+
+# (iv) Gender Distribution
+
+```{r}
+library(ggplot2)
+
+# Get the gender count
+gender_count <- table(dat$gender)
+
+# Create a dataframe for plotting
+gender_df <- data.frame(
+  gender = factor(names(gender_count)),
+  Frequency = as.numeric(gender_count)
+)
+
+# Plot
+ggplot(gender_df, aes(x = gender, y = Frequency, fill = gender)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Male" = "red", "Female" = "green"), name = "Gender") +
+  labs(x = "Gender", y = "Frequency", title = "Gender Distribution") +
+  theme_minimal()
+
+```
+The graph shows that there are slightly more males than females.
+
+# (v) Distribution of Client Ages
+
+```{r}
+library(ggplot2)
+
+# Plot
+ggplot(dat, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") +
+  labs(x = "Age", y = "Frequency", title = "Distribution of Client Ages") +
+  theme_minimal()
+
+```
+Majority of the customers are between the ages of 25 to 50
+
+# (vi) Churn distribution based on Age
+
+```{r}
+library(dplyr)
+
+# Define the bin edges and labels
+bins <- c(18, 30, 40, 50, 60, 100)  # Define the bin edges
+labels <- c('18-30', '31-40', '41-50', '51-60', '61+')  # Define the labels for each bin
+
+# Create age groups
+dat <- dat %>%
+  mutate(Age_Group = cut(age, breaks = bins, labels = labels, right = FALSE))
+
+# Print the modified DataFrame
+tail(dat)
+
+```
+
+```{r}
+library(ggplot2)
+
+# Define the plot
+ggplot(dat, aes(x = gender, fill = Age_Group)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("#FF9999", "#66CC99", "#FFCC99", "#99CCFF", "#FF99CC"), name = "Age Group", labels = labels) +
+  labs(x = "gender", y = "Number of customers", title = "Churn distribution based on Age") +
+  scale_x_discrete(labels = c("Female", "Male")) +
+  theme_minimal()
+
+```
+Most accounts are owned by people with less than 50 years. Especially 31-40 years Customers of ages 41-50 have the highest churn rate.
+
+## 3) Machine Learning Modelling - Classification :-
+
+# Splitting into Test and Train Sets 80/20 split
+
+```{r}
+sample <- sample(c(TRUE, FALSE), nrow(dat), replace=TRUE, prob=c(0.8,0.2))
+train <- dat[sample,]
+test <- dat[!sample,]
+```
+
+
+# (i) LDA Model
+
+# Creating new LDA model
+
+```{r}
+lda_churn <- lda(churn ~ .,  data = train)
+
+lda_churn
+
+ldaMeans <- lda_churn$means
+ldaCounts <- lda_churn$counts
+ldaPred <- predict(lda_churn)$posterior
+
+ldaPredTest <- predict(lda_churn, newdata = test)
+ldaPredTestPost <- predict(lda_churn, newdata = test)$posterior[,2]
+ldaPredTestClass <- ifelse(ldaPredTestPost > 0.5, "1", "0")
+
+
+ldaMatTest <- table(Prediction = ldaPredTestClass, churn = test$churn)
+
+Sens <- round(ldaMatTest[2,2] / sum(ldaMatTest[,2]), 4)
+Spec <- round(ldaMatTest[1,1] / sum(ldaMatTest[,1]), 4)
+Accuracy <- mean((test$churn == ldaPredTestClass))
+Test_Error <- 1 - Accuracy
+ldaMatTest
+cat(paste("Sensitivity: ", Sens, "\n Specificity: ", Spec, "\n Accuracy: ",
+          Accuracy, "\n Test Error: ", Test_Error, sep = ""))
+```
+
+The Linear Discriminant Analysis (LDA) model achieved an accuracy of approximately 82.93% on the test dataset, with a sensitivity of around 32.82% and specificity of about 95.18%. It correctly classified 1519 cases as negatives (True Negatives), but misclassified 77 positives as negatives (False Negatives) and 262 negatives as positives (False Positives). Overall, the model's performance is decent, with higher accuracy in identifying negatives but room for improvement in capturing positives.
+
+# (ii) QDA Model
+
+```{r}
+qda_churn <- qda(churn ~ .,  data = train)
+
+qda_churn
+
+qdaMeans <- qda_churn$means
+qdaCounts <- qda_churn$counts
+qdaPred <- predict(qda_churn)$posterior
+
+qdaPredTest <- predict(qda_churn, newdata = test)
+qdaPredTestPost <- predict(qda_churn, newdata = test)$posterior[,2]
+qdaPredTestClass <- ifelse(qdaPredTestPost > 0.5, "1", "0")
+
+
+qdaMatTest <- table(Prediction = qdaPredTestClass, churn = test$churn)
+
+Sens <- round(qdaMatTest[2,2] / sum(qdaMatTest[,2]), 4)
+Spec <- round(qdaMatTest[1,1] / sum(qdaMatTest[,1]), 4)
+Accuracy <- mean((test$churn == qdaPredTestClass))
+Test_Error <- 1 - Accuracy
+qdaMatTest
+cat(paste("Sensitivity: ", Sens, "\n Specificity: ", Spec, "\n Accuracy: ",
+          Accuracy, "\n Test Error: ", Test_Error, sep = ""))
+
+```
+The Quadratic Discriminant Analysis (QDA) model achieved an accuracy of about 82.68% on the test dataset. It correctly identified approximately 52.31% of actual positives (sensitivity) and around 90.1% of actual negatives (specificity). The confusion matrix revealed 1438 true negatives, 186 false positives, 158 false negatives, and 204 true positives. While the model demonstrates decent overall performance, there's room for enhancement, especially in capturing churn cases more accurately.
+
+# (iii) Logistic Regression
+
+```{r}
+# Prediction function:
+predLR <- function(LRMod, threshold, dat = NULL, categories = c(1,0)) {
+  if (is.null(dat))
+  {
+    ## predict for training data for LRMod
+    ## if dat is null
+    classPred <- ifelse(predict(LRMod, type = "response") > threshold,
+                        categories[1], categories[2])
+  } else {
+    classPred <- ifelse(predict(LRMod, type = "response",
+                                newdata = dat) > threshold,
+                        categories[1], categories[2])
+  }
+  return(classPred)
+}
+
+# Creating new logistic regression model
+lrm_train <- glm(churn ~ .,  data = train, family = "binomial")
+
+lrm_train
+
+# Using table using 0.5 rounding threshold
+predTest <- predLR(lrm_train, 0.5, dat = test, categories = c("1", "0"))
+confMatTest <- table(prediction = predTest, churn = test$churn)
+
+Sens <- round(confMatTest[2,2] / sum(confMatTest[,2]), 4)
+Spec <- round(confMatTest[1,1] / sum(confMatTest[,1]), 4)
+Accuracy <- mean((test$churn == predTest))
+Test_Error <- 1 - Accuracy
+confMatTest
+cat(paste("Sensitivity: ", Sens, "\n Specificity: ", Spec, "\n Accuracy: ",
+          Accuracy, "\n Test Error: ", Test_Error, sep = ""))
+```
+The logistic regression model analyzed the data and predicted whether customers would churn or not. It was about 83.59% accurate overall. When it comes to spotting customers who actually churned, it got it right about 30.51% of the time. For customers who didn't churn, it was correct about 96.55% of the time. In simpler terms, out of all the predictions it made, it got about 83.59% of them right. However, there's still room for improvement, especially in correctly identifying customers who might churn.
+
+# (iv) Naive Bayes
+
+```{r}
+train_copy <- train
+test_copy <- test
+
+train_copy$churn <- factor(train$churn)
+test_copy$churn <- factor(test$churn)
+
+
+naivebayes_train <- naive_bayes(churn ~ .,  data = train_copy)
+
+naivebayes_train
+
+naivePredTestClass <-  predict(naivebayes_train, newdata = test_copy)
+
+naiveMatTest <- table(Prediction = naivePredTestClass, churn = test_copy$churn)
+
+
+Sens <- round(naiveMatTest[2,2] / sum(naiveMatTest[,2]), 4)
+Spec <- round(naiveMatTest[1,1] / sum(naiveMatTest[,1]), 4)
+Accuracy <- mean((test_copy$churn == naivePredTestClass))
+Test_Error <- 1 - Accuracy
+naiveMatTest
+cat(paste("Sensitivity: ", Sens, "\n Specificity: ", Spec, "\n Accuracy: ",
+          Accuracy, "\n Test Error: ", Test_Error, sep = ""))
+
+```
+The Naive Bayes model accurately classified about 82.68% of cases. It correctly identified approximately 47.69% of actual positive cases (sensitivity) and around 91.23% of actual negative cases (specificity). The confusion matrix showed 1456 true negatives, 204 false positives, 140 false negatives, and 186 true positives.
+
+# (v) Polynomial Logistic Regression (With Cross Validation)
+
+```{r}
+cvModEsts <- lapply(1:10, function(d) {
+  glmFit <- glm(churn ~ . + poly(age, d), data = dat)
+  cvRes <- cv.glm(dat, glmFit, K = 10)$delta[1]
+  return(list(glmFit, cvRes))
+})
+
+cvEsts <- unlist(lapply(cvModEsts, function(d) {d[[2]]}))
+## grab models for later
+cvMods <- lapply(cvModEsts, function(d) d[[1]])
+
+
+## Plotting estimates:
+
+plot(x = 1:10, y = cvEsts)
+
+# Anova
+
+anovFunc <- function(t, ...) {anova(t, ..., test = "F")}
+anovaFit <- do.call(anovFunc, cvMods)
+anovaFit
+
+```
+# 7 is best model for Cross Validation
+
+Among the models tested, model 7 appears to be the best based on cross-validation. It showed the lowest residual deviance, indicating the best fit to the data. The significance of the F-statistic (Pr(>F)) for model 7 suggests that the predictors collectively have a significant effect on the response variable (churn). Therefore, model 7 is the preferred choice for predicting churn in this analysis.
+
+# Creating new logistic regression model
+
+```{r}
+lrm_2 <- glm(churn ~ . + poly(age, 7), data = train, family = "binomial")
+
+lrm_2
+
+# Using table using 0.5 rounding threshold
+predTest <- predLR(lrm_2, 0.5, dat = test, categories = c("1", "0"))
+confMatTest <- table(prediction = predTest, churn = test$churn)
+
+Sens <- round(confMatTest[2,2] / sum(confMatTest[,2]), 4)
+Spec <- round(confMatTest[1,1] / sum(confMatTest[,1]), 4)
+Accuracy <- mean((test$churn == predTest))
+Test_Error <- 1 - Accuracy
+confMatTest
+cat(paste("Sensitivity: ", Sens, "\n Specificity: ", Spec, "\n Accuracy: ",
+          Accuracy, "\n Test Error: ", Test_Error, sep = ""))
+```
+
+The logistic regression model, including polynomial terms for age, achieved an accuracy of about 84.14% on the test dataset. It correctly identified approximately 34.62% of actual churn cases (sensitivity) and around 96.24% of actual non-churn cases (specificity). The model's coefficients indicate how each predictor influences the likelihood of churn occurrence. However, there's a warning about prediction from a rank-deficient fit, suggesting potential issues with estimation.
+
